@@ -1,43 +1,67 @@
 from typing import Optional
-from sqlalchemy import asc, desc
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, HTTPException, Depends
 from sqlmodel import Session, select
+from sqlalchemy import asc, desc
 
-from app.db import get_session
-from app.models import Equipamento, StatusUpdate, StatusEquipamento
-from app.auth import obter_usuario_atual
+from app.db import engine
+from app.models import (
+    Equipamento,
+    EquipamentoCreate,
+    StatusUpdate,
+    StatusEquipamento,
+    Manutencao,
+    ManutencaoCreate,
+    User,
+    UserCreate
+)
+from app.auth import get_current_user, criar_token
 
 router = APIRouter()
 
 
-@router.post(
-    "/equipamento",
-    response_model=Equipamento,
-    status_code=status.HTTP_201_CREATED
-)
-def criar_equipamento(
-    equipamento: Equipamento,
-    session: Session = Depends(get_session),
-    current_user: dict = Depends(obter_usuario_atual)
-):
-    # impedir série duplicada
-    statement = select(Equipamento).where(Equipamento.serie == equipamento.serie)
-    existe = session.exec(statement).first()
+@router.get("/")
+def home():
+    return {"mensagem": "API de Equipamentos funcionando"}
 
-    if existe:
-        raise HTTPException(
-            status_code=400,
-            detail="Já existe equipamento com essa série"
+
+@router.post("/users")
+def criar_usuario(user: UserCreate):
+    with Session(engine) as session:
+        existe = session.exec(
+            select(User).where(User.username == user.username)
+        ).first()
+
+        if existe:
+            raise HTTPException(status_code=400, detail="Usuário já existe")
+
+        novo_usuario = User(
+            username=user.username,
+            hashed_password=user.password
         )
 
-    session.add(equipamento)
-    session.commit()
-    session.refresh(equipamento)
+        session.add(novo_usuario)
+        session.commit()
+        session.refresh(novo_usuario)
 
-    return equipamento
+        return novo_usuario
 
 
-@router.get("/equipamentos", response_model=list[Equipamento])
+@router.post("/login")
+def login(user: UserCreate):
+    with Session(engine) as session:
+        db_user = session.exec(
+            select(User).where(User.username == user.username)
+        ).first()
+
+        if not db_user:
+            raise HTTPException(status_code=401, detail="Usuário inválido")
+
+        token = criar_token({"sub": db_user.username})
+
+        return {"access_token": token, "token_type": "bearer"}
+
+
+@router.get("/equipamentos")
 def listar_equipamentos(
     status: Optional[StatusEquipamento] = None,
     nome: Optional[str] = None,
@@ -45,93 +69,232 @@ def listar_equipamentos(
     sort: Optional[str] = None,
     limit: int = 20,
     offset: int = 0,
-    session: Session = Depends(get_session),
-    current_user: User = Depends(obter_usuario_atual)
+    current_user: str = Depends(get_current_user)
 ):
-    statement = select(Equipamento)
+    with Session(engine) as session:
 
-    if status:
-        statement = statement.where(Equipamento.status == status)
+        query = select(Equipamento)
 
-    if nome:
-        statement = statement.where(Equipamento.nome.contains(nome))
+        if status:
+            query = query.where(Equipamento.status == status)
 
-    if serie:
-        statement = statement.where(Equipamento.serie.contains(serie))
+        if nome:
+            query = query.where(Equipamento.nome.contains(nome))
 
-    if sort:
-        campo = sort.replace("-", "")
-        coluna = getattr(Equipamento, campo, None)
+        if serie:
+            query = query.where(Equipamento.serie.contains(serie))
 
-        if coluna:
-            if sort.startswith("-"):
-                statement = statement.order_by(desc(coluna))
-            else:
-                statement = statement.order_by(asc(coluna))
+        if sort:
+            campo = sort.replace("-", "")
+            coluna = getattr(Equipamento, campo, None)
 
-    statement = statement.offset(offset).limit(limit)
+            if coluna is not None:
+                if sort.startswith("-"):
+                    query = query.order_by(desc(coluna))
+                else:
+                    query = query.order_by(asc(coluna))
 
-    equipamentos = session.exec(statement).all()
+        query = query.offset(offset).limit(limit)
 
-    return equipamentos
+        equipamentos = session.exec(query).all()
+
+        return equipamentos
 
 
-@router.get("/equipamento/{equip_id}", response_model=Equipamento)
-def buscar_por_id(
+@router.get("/equipamentos")
+def listar_equipamentos(
+    status: Optional[StatusEquipamento] = None,
+    nome: Optional[str] = None,
+    serie: Optional[str] = None,
+    sort: Optional[str] = None,
+    limit: int = 20,
+    offset: int = 0,
+    current_user: str = Depends(get_current_user)
+):
+    with Session(engine) as session:
+        query = select(Equipamento)
+
+        if status:
+            query = query.where(Equipamento.status == status)
+
+        if nome:
+            query = query.where(Equipamento.nome.contains(nome))
+
+        if serie:
+            query = query.where(Equipamento.serie.contains(serie))
+
+        if sort:
+            campo = sort.replace("-", "")
+            coluna = getattr(Equipamento, campo, None)
+
+            if coluna is not None:
+                if sort.startswith("-"):
+                    query = query.order_by(desc(coluna))
+                else:
+                    query = query.order_by(asc(coluna))
+
+        query = query.offset(offset).limit(limit)
+
+        equipamentos = session.exec(query).all()
+        return equipamentos
+
+
+@router.get("/equipamento/{equip_id}")
+def buscar_equipamento(
     equip_id: int,
-    session: Session = Depends(get_session),
-    current_user: dict = Depends(obter_usuario_atual)
+    current_user: str = Depends(get_current_user)
 ):
-    equipamento = session.get(Equipamento, equip_id)
+    with Session(engine) as session:
+        equipamento = session.get(Equipamento, equip_id)
 
-    if not equipamento:
-        raise HTTPException(
-            status_code=404,
-            detail="Equipamento não encontrado"
-        )
+        if not equipamento:
+            raise HTTPException(status_code=404, detail="Equipamento não encontrado")
 
-    return equipamento
+        manutencoes = session.exec(
+            select(Manutencao).where(Manutencao.equipamento_id == equip_id)
+        ).all()
+
+        return {
+            "id": equipamento.id,
+            "nome": equipamento.nome,
+            "serie": equipamento.serie,
+            "status": equipamento.status,
+            "manutencoes": manutencoes
+        }
 
 
 @router.delete("/equipamento/{equip_id}")
-def deletar_por_id(
+def deletar_equipamento(
     equip_id: int,
-    session: Session = Depends(get_session),
-    current_user: dict = Depends(obter_usuario_atual)
+    current_user: str = Depends(get_current_user)
 ):
-    equipamento = session.get(Equipamento, equip_id)
+    with Session(engine) as session:
+        equipamento = session.get(Equipamento, equip_id)
 
-    if not equipamento:
-        raise HTTPException(
-            status_code=404,
-            detail="Equipamento não encontrado"
-        )
+        if not equipamento:
+            raise HTTPException(status_code=404, detail="Equipamento não encontrado")
 
-    session.delete(equipamento)
-    session.commit()
+        session.delete(equipamento)
+        session.commit()
 
-    return {"mensagem": "Equipamento removido com sucesso"}
+        return {"mensagem": "Equipamento removido"}
 
 
-@router.put("/equipamento/{equip_id}/status", response_model=Equipamento)
+@router.put("/equipamento/{equip_id}/status")
 def atualizar_status(
     equip_id: int,
-    payload: StatusUpdate,
-    session: Session = Depends(get_session),
-    current_user: dict = Depends(obter_usuario_atual)
+    status_update: StatusUpdate,
+    current_user: str = Depends(get_current_user)
 ):
-    equipamento = session.get(Equipamento, equip_id)
+    with Session(engine) as session:
+        equipamento = session.get(Equipamento, equip_id)
 
-    if not equipamento:
-        raise HTTPException(
-            status_code=404,
-            detail="Equipamento não encontrado"
+        if not equipamento:
+            raise HTTPException(status_code=404, detail="Equipamento não encontrado")
+
+        equipamento.status = status_update.status
+
+        session.add(equipamento)
+        session.commit()
+        session.refresh(equipamento)
+
+        return equipamento
+
+
+@router.post("/equipamento/{equip_id}/manutencao")
+def criar_manutencao(
+    equip_id: int,
+    payload: ManutencaoCreate,
+    current_user: str = Depends(get_current_user)
+):
+    with Session(engine) as session:
+        equipamento = session.get(Equipamento, equip_id)
+
+        if not equipamento:
+            raise HTTPException(status_code=404, detail="Equipamento não encontrado")
+
+        manutencao = Manutencao(
+            equipamento_id=equip_id,
+            descricao=payload.descricao,
+            tecnico=payload.tecnico
         )
 
-    equipamento.status = payload.status
+        session.add(manutencao)
+        session.commit()
+        session.refresh(manutencao)
 
-    session.add(equipamento)
-    session.commit()
-    session.refresh(equipamento)
+        return manutencao
 
-    return equipamento
+
+@router.get("/equipamento/{equip_id}/manutencoes")
+def listar_manutencoes(
+    equip_id: int,
+    current_user: str = Depends(get_current_user)
+):
+    with Session(engine) as session:
+        manutencoes = session.exec(
+            select(Manutencao).where(Manutencao.equipamento_id == equip_id)
+        ).all()
+
+        return manutencoes
+
+
+@router.get("/dashboard")
+def dashboard(
+    current_user: str = Depends(get_current_user)
+):
+    with Session(engine) as session:
+        equipamentos = session.exec(select(Equipamento)).all()
+
+        total = len(equipamentos)
+        ativos = len([e for e in equipamentos if e.status == StatusEquipamento.ativo])
+        manutencao = len([e for e in equipamentos if e.status == StatusEquipamento.manutencao])
+        parados = len([e for e in equipamentos if e.status == StatusEquipamento.parado])
+
+        total_manutencoes = len(session.exec(select(Manutencao)).all())
+
+        return {
+            "total_equipamentos": total,
+            "ativos": ativos,
+            "em_manutencao": manutencao,
+            "parados": parados,
+            "total_manutencoes": total_manutencoes
+        }
+    
+@router.get("/estatisticas/manutencoes")
+def estatisticas_manutencoes(
+    current_user: str = Depends(get_current_user)
+):
+    with Session(engine) as session:
+        manutencoes = session.exec(select(Manutencao)).all()
+        equipamentos = session.exec(select(Equipamento)).all()
+
+        total_manutencoes = len(manutencoes)
+        total_equipamentos = len(equipamentos)
+
+        contagem_por_equipamento = {}
+
+        for manutencao in manutencoes:
+            equip_id = manutencao.equipamento_id
+            contagem_por_equipamento[equip_id] = contagem_por_equipamento.get(equip_id, 0) + 1
+
+        equipamento_com_mais_manutencoes = None
+        maior_qtd = 0
+
+        for equipamento in equipamentos:
+            qtd = contagem_por_equipamento.get(equipamento.id, 0)
+            if qtd > maior_qtd:
+                maior_qtd = qtd
+                equipamento_com_mais_manutencoes = equipamento.nome
+
+        media_manutencoes_por_equipamento = (
+            total_manutencoes / total_equipamentos
+            if total_equipamentos > 0 else 0
+        )
+
+        return {
+            "total_manutencoes": total_manutencoes,
+            "equipamento_com_mais_manutencoes": equipamento_com_mais_manutencoes,
+            "quantidade_do_campeao": maior_qtd,
+            "media_manutencoes_por_equipamento": round(media_manutencoes_por_equipamento, 2)
+        }
