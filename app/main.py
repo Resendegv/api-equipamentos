@@ -1,42 +1,34 @@
-from fastapi import FastAPI, Depends, HTTPException
-from fastapi.security import OAuth2PasswordRequestForm
-from sqlmodel import Session, select
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
-from app.db import criar_db_e_tabelas, get_session
-from app.routes import router
-from app.models import User
-from app.auth import criar_token
+# routers
+from app.routers import equipamentos_router
+from app.routers import estatisticas_router
+from app.routers import auth_router
 
-app = FastAPI(title="API de Equipamentos")
+app = FastAPI(
+    title="API Equipamentos",
+    description="API para gestão de equipamentos de frota",
+    version="1.0.0"
+)
 
+# CORS (permite acesso de front-end no futuro)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-@app.on_event("startup")
-def on_startup():
-    criar_db_e_tabelas()
-
-
+# rota inicial
 @app.get("/")
-def home():
-    return {"status": "ok", "msg": "API online. Acesse /docs"}
-
-
-@app.post("/login")
-def login(
-    form_data: OAuth2PasswordRequestForm = Depends(),
-    session: Session = Depends(get_session)
-):
-    statement = select(User).where(User.username == form_data.username)
-    db_user = session.exec(statement).first()
-
-    if not db_user:
-        raise HTTPException(status_code=401, detail="Usuário inválido")
-
-    token = criar_token({"sub": db_user.username})
-
+def root():
     return {
-        "access_token": token,
-        "token_type": "bearer"
+        "mensagem": "API Equipamentos funcionando 🚜"
     }
 
-
-app.include_router(router)
+# registrar routers
+app.include_router(auth_router.router)
+app.include_router(equipamentos_router.router)
+app.include_router(estatisticas_router.router)
